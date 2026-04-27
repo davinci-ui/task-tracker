@@ -235,6 +235,7 @@
         async function loadView() {
             loadStats();
             var view = document.getElementById('view');
+            view.innerHTML = '';
             var list;
 
             if (currentTab === 'projects') {

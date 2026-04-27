@@ -267,7 +267,9 @@ def list_todos(
         if status:
             query += " AND status = ?"
             params.append(status)
-        elif not include_done:
+        elif not include_done and pid is None:
+            # Only filter out done items when listing root items
+            # Subtasks should always show regardless of status
             query += " AND status != 'done'"
 
         if category_id:
