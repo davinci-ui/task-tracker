@@ -506,6 +506,22 @@ def get_stats():
     }
 
 
+@app.post("/api/todos/{todo_id}/uncomplete")
+def uncomplete_todo(todo_id: int):
+    """Mark a todo as not done, resetting status and completed_at."""
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, f"Todo #{todo_id} not found")
+        # If it's a parent, also reset subtasks (don't delete them)
+        conn.execute(
+            "UPDATE todos SET status = 'todo', completed_at = NULL, updated_at = ? WHERE id = ?",
+            (datetime.now().isoformat(), todo_id)
+        )
+        conn.commit()
+    return {"id": todo_id, "title": row["title"], "status": "reset"}
+
+
 @app.get("/api/backup")
 def trigger_backup():
     backup_db()

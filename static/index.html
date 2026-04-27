@@ -331,22 +331,23 @@
         }
 
         async function toggleSubtask(subId, checkEl) {
+            const isNowChecked = !checkEl.classList.contains('checked');
             // Optimistic toggle
-            const isNowDone = !checkEl.classList.contains('checked');
-            checkEl.classList.toggle('checked', isNowDone);
-            checkEl.textContent = isNowDone ? '✓' : '';
+            checkEl.classList.toggle('checked', isNowChecked);
+            checkEl.textContent = isNowChecked ? '✓' : '';
             const row = checkEl.closest('.subtask-row');
-            row.classList.toggle('subtask-done', isNowDone);
-
+            row.classList.toggle('subtask-done', isNowChecked);
             try {
-                await fetch(`${API}/todos/${subId}/complete`, { method: 'POST' });
-                // Find parent_id from the subtask element context
+                if (isNowChecked) {
+                    await fetch(`${API}/todos/${subId}/complete`, { method: 'POST' });
+                } else {
+                    await fetch(`${API}/todos/${subId}/uncomplete`, { method: 'POST' });
+                }
                 const panel = checkEl.closest('.subtask-panel');
                 const parentId = panel ? parseInt(panel.id.replace('panel-', '')) : null;
-                // Refresh subtasks and parent progress
                 if (parentId) {
                     await loadSubtasks(parentId);
-                    await refreshParentProgress(parentId);
+                    refreshParentProgress(parentId);
                 }
                 loadTasks();
             } catch(e) { alert('Error'); loadTasks(); }
