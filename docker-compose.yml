@@ -1,0 +1,14 @@
+version: "3.8"
+
+services:
+  task-tracker:
+    build: .
+    container_name: task-tracker
+    ports:
+      - "7780:7780"
+    volumes:
+      - task-tracker-data:/data
+    restart: unless-stopped
+
+volumes:
+  task-tracker-data:
