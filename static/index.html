@@ -312,10 +312,11 @@
 
                     var el = document.createElement('div');
                     el.className = 'task-item item-done';
-                    el.innerHTML = '<div class="task-header item-done" onclick="toggleDoneParent(' + t.id + ')">'
+                    el.innerHTML = '<div class="task-header item-done">'
                         + '<button class="expand-btn ' + (expandedParents.has(t.id) ? 'expanded' : '') + '" onclick="event.stopPropagation(); toggleDoneParent(' + t.id + ')">▶</button>'
                         + '<span style="font-size:16px;flex-shrink:0;">📂</span>'
                         + '<div class="task-content"><div class="task-title" style="text-decoration:line-through;">' + esc(t.title) + '</div><div class="task-meta">' + meta + '</div></div>'
+                        + '<button class="btn btn-sm btn-ghost" onclick="event.stopPropagation(); uncheckItem(' + t.id + ')">↩</button>'
                         + '</div>'
                         + '<div class="subtask-panel ' + (expandedParents.has(t.id) ? 'open' : '') + '" id="panel-' + t.id + '">'
                         + '<div class="subtask-list" id="subs-' + t.id + '">' + (expandedParents.has(t.id) ? '<div style="padding:8px 16px;">loading...</div>' : '') + '</div></div>';
@@ -380,13 +381,18 @@
 
         async function toggleSubtask(subId, el) {
             var done = !el.classList.contains('checked');
+            // Optimistic UI update
             el.classList.toggle('checked', done);
             el.textContent = done ? '✓' : '';
-            el.closest('.subtask-row').classList.toggle('st-done', done);
+            var row = el.closest('.subtask-row');
+            row.classList.toggle('st-done', done);
             await fetch(API + '/todos/' + subId + (done ? '/complete' : '/uncomplete'), { method: 'POST' });
             var panel = el.closest('.subtask-panel');
             var pid = panel ? parseInt(panel.id.replace('panel-', '')) : null;
-            if (pid) { loadSubs(pid); refreshParent(pid); }
+            if (pid) {
+                await loadSubs(pid);
+                refreshParent(pid);
+            }
             loadStats();
         }
 
@@ -408,15 +414,19 @@
         async function refreshParent(pid) {
             var items = await fetch(API + '/todos/projects').then(function(r){ return r.json(); });
             var p = items.find(function(t){ return t.id === pid; });
-            if (!p || !p.subtask_count) return;
             var el = document.getElementById('parent-' + pid);
-            if (!el) return;
-            var ce = el.querySelector('.tag.subtask-count');
+            if (!p || !p.subtask_count) return;
+            var ce = el ? el.querySelector('.tag.subtask-count') : null;
             if (ce) ce.textContent = p.subtask_count.done + '/' + p.subtask_count.total;
-            var pe = el.querySelector('.progress-fill');
+            var pe = el ? el.querySelector('.progress-fill') : null;
             if (pe) pe.style.width = Math.round((p.subtask_count.done / p.subtask_count.total) * 100) + '%';
-            if (p.status === 'done') { el.classList.add('item-done'); el.querySelector('.task-header').classList.add('item-done'); if(ce)ce.style.background='#14532d'; }
-            else { el.classList.remove('item-done'); el.querySelector('.task-header').classList.remove('item-done'); if(ce)ce.style.background=''; }
+            if (p.status === 'done') {
+                if (el) { el.classList.add('item-done'); el.querySelector('.task-header').classList.add('item-done'); if(ce)ce.style.background='#14532d'; }
+                // Parent auto-completed - reload view to move it to Done tab
+                loadView();
+            } else {
+                if (el) { el.classList.remove('item-done'); el.querySelector('.task-header').classList.remove('item-done'); if(ce)ce.style.background=''; }
+            }
         }
 
         // Quick add
