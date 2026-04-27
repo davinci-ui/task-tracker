@@ -210,12 +210,6 @@
                 catSel.appendChild(new Option(categories[key], key));
                 filterCat.appendChild(new Option(categories[key], key));
             }
-            currentTab = "projects";
-            document.querySelectorAll(".tab-btn").forEach(function(b) { b.classList.remove("active"); });
-            document.querySelector(".tab-btn[data-tab=projects]").classList.add("active");
-            document.getElementById("bar-project").classList.remove("hidden");
-            document.getElementById("bar-task").classList.add("hidden");
-            document.getElementById("bar-done").classList.add("hidden");
             loadView();
         }
 
@@ -233,12 +227,6 @@
             document.getElementById('bar-project').classList.toggle('hidden', tab !== 'projects');
             document.getElementById('bar-task').classList.toggle('hidden', tab !== 'tasks');
             document.getElementById('bar-done').classList.toggle('hidden', tab !== 'done');
-            currentTab = "projects";
-            document.querySelectorAll(".tab-btn").forEach(function(b) { b.classList.remove("active"); });
-            document.querySelector(".tab-btn[data-tab=projects]").classList.add("active");
-            document.getElementById("bar-project").classList.remove("hidden");
-            document.getElementById("bar-task").classList.add("hidden");
-            document.getElementById("bar-done").classList.add("hidden");
             loadView();
         }
 
@@ -383,12 +371,6 @@
         function toggleParent(id) {
             if (expandedParents.has(id)) expandedParents.delete(id);
             else expandedParents.add(id);
-            currentTab = "projects";
-            document.querySelectorAll(".tab-btn").forEach(function(b) { b.classList.remove("active"); });
-            document.querySelector(".tab-btn[data-tab=projects]").classList.add("active");
-            document.getElementById("bar-project").classList.remove("hidden");
-            document.getElementById("bar-task").classList.add("hidden");
-            document.getElementById("bar-done").classList.add("hidden");
             loadView();
         }
 
@@ -441,13 +423,7 @@
             if (p.status === 'done') {
                 if (el) { el.classList.add('item-done'); el.querySelector('.task-header').classList.add('item-done'); if(ce)ce.style.background='#14532d'; }
                 // Parent auto-completed - reload view to move it to Done tab
-                currentTab = "projects";
-            document.querySelectorAll(".tab-btn").forEach(function(b) { b.classList.remove("active"); });
-            document.querySelector(".tab-btn[data-tab=projects]").classList.add("active");
-            document.getElementById("bar-project").classList.remove("hidden");
-            document.getElementById("bar-task").classList.add("hidden");
-            document.getElementById("bar-done").classList.add("hidden");
-            loadView();
+                loadView();
             } else {
                 if (el) { el.classList.remove('item-done'); el.querySelector('.task-header').classList.remove('item-done'); if(ce)ce.style.background=''; }
             }
@@ -461,12 +437,6 @@
             if (!d.value) { d.focus(); return; }
             await fetch(API + '/todos', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ title: inp.value.trim(), due_date: d.value, item_type: 'project' }) });
             inp.value = ''; d.value = '';
-            currentTab = "projects";
-            document.querySelectorAll(".tab-btn").forEach(function(b) { b.classList.remove("active"); });
-            document.querySelector(".tab-btn[data-tab=projects]").classList.add("active");
-            document.getElementById("bar-project").classList.remove("hidden");
-            document.getElementById("bar-task").classList.add("hidden");
-            document.getElementById("bar-done").classList.add("hidden");
             loadView();
         }
 
@@ -476,12 +446,6 @@
             if (!inp.value.trim()) return;
             await fetch(API + '/todos', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ title: inp.value.trim(), priority: document.getElementById('qt-prior').value, due_date: d.value || null, item_type: 'task' }) });
             inp.value = ''; d.value = '';
-            currentTab = "projects";
-            document.querySelectorAll(".tab-btn").forEach(function(b) { b.classList.remove("active"); });
-            document.querySelector(".tab-btn[data-tab=projects]").classList.add("active");
-            document.getElementById("bar-project").classList.remove("hidden");
-            document.getElementById("bar-task").classList.add("hidden");
-            document.getElementById("bar-done").classList.add("hidden");
             loadView();
         }
 
@@ -494,12 +458,6 @@
             var tt = row.querySelector('.task-title');
             tt.style.textDecoration = done ? 'line-through' : 'none';
             await fetch(API + '/todos/' + id + (done ? '/complete' : '/uncomplete'), { method: 'POST' });
-            currentTab = "projects";
-            document.querySelectorAll(".tab-btn").forEach(function(b) { b.classList.remove("active"); });
-            document.querySelector(".tab-btn[data-tab=projects]").classList.add("active");
-            document.getElementById("bar-project").classList.remove("hidden");
-            document.getElementById("bar-task").classList.add("hidden");
-            document.getElementById("bar-done").classList.add("hidden");
             loadView();
         }
 
@@ -507,12 +465,6 @@
         async function uncheckItem(id) {
             if (!confirm('Uncheck this and move it back to active?')) return;
             await fetch(API + '/todos/' + id + '/uncomplete', { method: 'POST' });
-            currentTab = "projects";
-            document.querySelectorAll(".tab-btn").forEach(function(b) { b.classList.remove("active"); });
-            document.querySelector(".tab-btn[data-tab=projects]").classList.add("active");
-            document.getElementById("bar-project").classList.remove("hidden");
-            document.getElementById("bar-task").classList.add("hidden");
-            document.getElementById("bar-done").classList.add("hidden");
             loadView();
         }
 
@@ -597,18 +549,12 @@
                     }
                 }
             } catch(err) { alert('Error'); return; }
-            hideModal(); switchTab("projects", document.querySelector("button[data-tab="projects"]"));
+            hideModal(); loadView();
         }
 
         async function deleteItem(id) {
             if (!confirm('Delete?')) return;
             await fetch(API + '/todos/' + id, { method: 'DELETE' });
-            currentTab = "projects";
-            document.querySelectorAll(".tab-btn").forEach(function(b) { b.classList.remove("active"); });
-            document.querySelector(".tab-btn[data-tab=projects]").classList.add("active");
-            document.getElementById("bar-project").classList.remove("hidden");
-            document.getElementById("bar-task").classList.add("hidden");
-            document.getElementById("bar-done").classList.add("hidden");
             loadView();
         }
 
