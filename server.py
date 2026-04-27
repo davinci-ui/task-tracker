@@ -225,7 +225,9 @@ def list_todos(
         query += " AND status = ?"
         params.append(status)
     elif not include_done:
-        query += " AND status != 'done'"
+        # Show done items crossed-out, but don't auto-filter them out
+        # Users should see what's done
+        pass
 
     if category_id:
         query += " AND category_id = ?"
