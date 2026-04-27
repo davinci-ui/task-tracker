@@ -1,7 +1,11 @@
 """
 Falafel Brothers — Task Tracker
 FastAPI backend with SQLite on Docker volume
-Parent/subtask support: projects have dropdown subtasks
+
+Three views:
+- Projects: parent items with dropdown subtasks
+- Tasks: standalone checklist items (no subtasks)
+- Done: completed projects or tasks
 """
 
 import sqlite3
@@ -38,9 +42,6 @@ CATEGORIES = {
 }
 
 
-# ── Models ──────────────────────────────────────────────
-
-
 class TodoCreate(BaseModel):
     title: str
     description: Optional[str] = None
@@ -48,8 +49,9 @@ class TodoCreate(BaseModel):
     category_id: Optional[int] = None
     project: Optional[str] = None
     tags: Optional[str] = None
-    due_date: Optional[str] = None  # Required on parent, optional for subtasks
-    parent_id: Optional[int] = None  # If set, this is a subtask
+    due_date: Optional[str] = None
+    parent_id: Optional[int] = None
+    item_type: Optional[str] = None  # "project" or "task"
 
 
 class TodoUpdate(BaseModel):
@@ -63,10 +65,19 @@ class TodoUpdate(BaseModel):
     due_date: Optional[str] = None
 
 
-# ── DB ──────────────────────────────────────────────
-
-
 def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(todos)").fetchall()]
+    if "item_type" not in cols:
+        conn.execute("ALTER TABLE todos ADD COLUMN item_type TEXT DEFAULT 'task'")
+        conn.execute("""
+            UPDATE todos SET item_type = 'project'
+            WHERE parent_id IS NULL
+              AND id IN (SELECT DISTINCT parent_id FROM todos WHERE parent_id IS NOT NULL)
+        """)
+        conn.commit()
+    conn.close()
+
     with get_db() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS todos (
@@ -81,6 +92,7 @@ def init_db():
                 due_date TEXT,
                 parent_id INTEGER,
                 sort_order INTEGER DEFAULT 0,
+                item_type TEXT DEFAULT 'task',
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT,
                 completed_at TEXT,
@@ -97,6 +109,7 @@ def init_db():
             );
             CREATE INDEX IF NOT EXISTS idx_todos_status ON todos(status);
             CREATE INDEX IF NOT EXISTS idx_todos_parent ON todos(parent_id);
+            CREATE INDEX IF NOT EXISTS idx_todos_type ON todos(item_type);
             CREATE INDEX IF NOT EXISTS idx_todos_due ON todos(due_date);
             CREATE INDEX IF NOT EXISTS idx_todos_category ON todos(category_id);
             CREATE INDEX IF NOT EXISTS idx_log_date ON daily_log(date);
@@ -124,18 +137,17 @@ def backup_db():
         shutil.copy2(DB_PATH, backup_path)
 
 
-def _check_parent_complete(conn, todo_id):
+def _check_parent_complete(conn, parent_id):
     """If all subtasks of a parent are done, auto-complete the parent."""
     now = datetime.now().isoformat()
     remaining = conn.execute(
         "SELECT COUNT(*) FROM todos WHERE parent_id = ? AND status != 'done'",
-        (todo_id,)
+        (parent_id,)
     ).fetchone()[0]
     if remaining == 0:
-        # Get parent info
         parent_row = conn.execute(
             "SELECT id, title, category_id FROM todos WHERE id = ? AND status != 'done'",
-            (todo_id,)
+            (parent_id,)
         ).fetchone()
         if parent_row:
             conn.execute(
@@ -151,6 +163,33 @@ def _check_parent_complete(conn, todo_id):
     return None
 
 
+def _row_to_dict(row, conn=None):
+    result = {
+        "id": row["id"],
+        "title": row["title"],
+        "description": row["description"],
+        "priority": row["priority"],
+        "status": row["status"],
+        "category_id": row["category_id"],
+        "category_name": CATEGORIES.get(row["category_id"], "Unknown"),
+        "project": row["project"],
+        "tags": row["tags"],
+        "due_date": row["due_date"],
+        "parent_id": row["parent_id"],
+        "sort_order": row["sort_order"],
+        "item_type": row["item_type"],
+        "created_at": row["created_at"],
+        "completed_at": row["completed_at"],
+        "updated_at": row["updated_at"] if "updated_at" in row.keys() else None,
+    }
+    # Add subtask count for projects
+    if row["item_type"] == "project" and conn:
+        total = conn.execute("SELECT COUNT(*) FROM todos WHERE parent_id = ?", (row["id"],)).fetchone()[0]
+        done_count = conn.execute("SELECT COUNT(*) FROM todos WHERE parent_id = ? AND status = 'done'", (row["id"],)).fetchone()[0]
+        result["subtask_count"] = {"total": total, "done": done_count}
+    return result
+
+
 # ── Startup ────────────────────────────────────────────
 
 
@@ -159,7 +198,8 @@ def startup():
     init_db()
 
 
-# ── Endpoints ─────────────────────────────────────────__
+# ── Index ──────────────────────────────────────────────
+
 
 @app.get("/")
 def index() -> HTMLResponse:
@@ -175,27 +215,35 @@ def get_categories():
     return CATEGORIES
 
 
-# ── Todos ────────────────────────────────────────────
+# ── Todos ─────────────────────────────────────────────
+
 
 @app.post("/api/todos")
 def create_todo(todo: TodoCreate):
     with get_db() as conn:
         sort_order = 0
+        item_type = todo.item_type or ("project" if todo.parent_id is None else "task")
+
         if todo.parent_id:
             sort_order = conn.execute(
                 "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM todos WHERE parent_id = ?",
                 (todo.parent_id,)
             ).fetchone()[0]
+            # Mark parent as project if not already
+            conn.execute(
+                "UPDATE todos SET item_type = 'project' WHERE id = ? AND item_type != 'project'",
+                (todo.parent_id,)
+            )
 
         cursor = conn.execute(
-            """INSERT INTO todos (title, description, priority, category_id, project, tags, due_date, parent_id, sort_order, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO todos (title, description, priority, category_id, project, tags, due_date, parent_id, sort_order, item_type, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (todo.title, todo.description, todo.priority, todo.category_id,
              todo.project, todo.tags, todo.due_date, todo.parent_id, sort_order,
-             datetime.now().isoformat())
+             item_type, datetime.now().isoformat())
         )
         conn.commit()
-        return {"id": cursor.lastrowid, "title": todo.title, "status": "created"}
+        return {"id": cursor.lastrowid, "title": todo.title, "item_type": item_type, "status": "created"}
 
 
 @app.get("/api/todos")
@@ -205,11 +253,12 @@ def list_todos(
     priority: Optional[str] = None,
     include_done: bool = False,
     parent_id: Optional[str] = None,
+    item_type: Optional[str] = None,
 ):
     """List todos.
-    - No parent_id → returns only root items (projects)
-    - parent_id=0 → same
-    - parent_id=<int> → returns subtasks for that parent
+    - item_type=project → projects (root items with subtasks)
+    - item_type=task → standalone tasks (root items without subtasks)
+    - parent_id=N → subtasks for that parent
     """
     pid = None
     if parent_id is not None:
@@ -224,10 +273,6 @@ def list_todos(
     if status:
         query += " AND status = ?"
         params.append(status)
-    elif not include_done:
-        # Show done items crossed-out, but don't auto-filter them out
-        # Users should see what's done
-        pass
 
     if category_id:
         query += " AND category_id = ?"
@@ -237,11 +282,14 @@ def list_todos(
         query += " AND priority = ?"
         params.append(priority)
 
+    if item_type:
+        query += " AND item_type = ?"
+        params.append(item_type)
+
     if pid is not None and pid > 0:
         query += " AND parent_id = ?"
         params.append(pid)
     else:
-        # Only root items
         query += " AND parent_id IS NULL"
 
     query += " ORDER BY due_date, CASE priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 END"
@@ -250,74 +298,32 @@ def list_todos(
     conn.row_factory = sqlite3.Row
     rows = conn.execute(query, params).fetchall()
 
-    todos = []
-    for row in rows:
-        subtask_count = None
-        # Get subtask stats for root items
-        if row["parent_id"] is None:
-            total = conn.execute("SELECT COUNT(*) FROM todos WHERE parent_id = ?", (row["id"],)).fetchone()[0]
-            done_count = conn.execute("SELECT COUNT(*) FROM todos WHERE parent_id = ? AND status = 'done'", (row["id"],)).fetchone()[0]
-            subtask_count = {"total": total, "done": done_count}
-        todos.append({
-            "id": row["id"],
-            "title": row["title"],
-            "description": row["description"],
-            "priority": row["priority"],
-            "status": row["status"],
-            "category_id": row["category_id"],
-            "category_name": CATEGORIES.get(row["category_id"], "Unknown"),
-            "project": row["project"],
-            "tags": row["tags"],
-            "due_date": row["due_date"],
-            "parent_id": row["parent_id"],
-            "sort_order": row["sort_order"],
-            "created_at": row["created_at"],
-            "completed_at": row["completed_at"],
-            "subtask_count": subtask_count,
-        })
+    todos = [_row_to_dict(row, conn) for row in rows]
     conn.close()
     return todos
 
 
-@app.get("/api/todos/root")
-def list_root_todos(
-    status: Optional[str] = None,
-    category_id: Optional[int] = None,
-):
-    """Convenience: root items with subtask counts inline."""
-    return list_todos(status=status, category_id=category_id, include_done=False, parent_id=None)
+@app.get("/api/todos/projects")
+def list_projects(status: Optional[str] = None, category_id: Optional[int] = None):
+    return list_todos(status=status, category_id=category_id, item_type="project")
+
+
+@app.get("/api/todos/tasks")
+def list_tasks(status: Optional[str] = None, category_id: Optional[int] = None):
+    return list_todos(status=status, category_id=category_id, item_type="task")
 
 
 @app.get("/api/todos/{todo_id}")
 def get_todo(todo_id: int):
     with get_db() as conn:
-        row = conn.execute(
-            "SELECT * FROM todos WHERE id = ?", (todo_id,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
 
     if not row:
         raise HTTPException(404, f"Todo #{todo_id} not found")
 
-    result = {
-        "id": row["id"],
-        "title": row["title"],
-        "description": row["description"],
-        "priority": row["priority"],
-        "status": row["status"],
-        "category_id": row["category_id"],
-        "category_name": CATEGORIES.get(row["category_id"], "Unknown"),
-        "project": row["project"],
-        "tags": row["tags"],
-        "due_date": row["due_date"],
-        "parent_id": row["parent_id"],
-        "sort_order": row["sort_order"],
-        "created_at": row["created_at"],
-        "updated_at": row["updated_at"],
-        "completed_at": row["completed_at"],
-    }
+    result = _row_to_dict(row, conn)
 
-    if row["parent_id"] is None:
-        # Include subtasks
+    if row["item_type"] == "project":
         sub_rows = conn.execute(
             "SELECT id, title, priority, status, due_date, completed_at, sort_order FROM todos WHERE parent_id = ? ORDER BY sort_order, due_date",
             (todo_id,)
@@ -362,11 +368,9 @@ def update_todo(todo_id: int, update: TodoUpdate):
                 sets.append("completed_at = ?")
                 vals.append(now)
 
-                # Check parent auto-complete
                 if existing["parent_id"]:
                     _check_parent_complete(conn, existing["parent_id"])
 
-                # If parent completed, log it
                 if existing["parent_id"] is None:
                     if existing["category_id"]:
                         conn.execute(
@@ -378,21 +382,10 @@ def update_todo(todo_id: int, update: TodoUpdate):
             sets.append("updated_at = ?")
             vals.append(now)
             vals.append(todo_id)
-            conn.execute(f"UPDATE todos SET {', '.join(sets)} WHERE id = ?", vals)
+            conn.execute(f'UPDATE todos SET {", ".join(sets)} WHERE id = ?', vals)
             conn.commit()
 
         return {"id": todo_id, "status": "updated"}
-
-
-@app.delete("/api/todos/{todo_id}")
-def delete_todo(todo_id: int):
-    with get_db() as conn:
-        row = conn.execute("SELECT id FROM todos WHERE id = ?", (todo_id,)).fetchone()
-        if not row:
-            raise HTTPException(404, f"Todo #{todo_id} not found")
-        conn.execute("DELETE FROM todos WHERE id = ?", (todo_id,))
-        conn.commit()
-    return {"id": todo_id, "status": "deleted"}
 
 
 @app.post("/api/todos/{todo_id}/complete")
@@ -418,6 +411,31 @@ def complete_todo(todo_id: int):
     return {"id": todo_id, "title": row["title"], "status": "completed"}
 
 
+@app.post("/api/todos/{todo_id}/uncomplete")
+def uncomplete_todo(todo_id: int):
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, f"Todo #{todo_id} not found")
+        conn.execute(
+            "UPDATE todos SET status = 'todo', completed_at = NULL, updated_at = ? WHERE id = ?",
+            (datetime.now().isoformat(), todo_id)
+        )
+        conn.commit()
+    return {"id": todo_id, "title": row["title"], "status": "reset"}
+
+
+@app.delete("/api/todos/{todo_id}")
+def delete_todo(todo_id: int):
+    with get_db() as conn:
+        row = conn.execute("SELECT id FROM todos WHERE id = ?", (todo_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, f"Todo #{todo_id} not found")
+        conn.execute("DELETE FROM todos WHERE id = ?", (todo_id,))
+        conn.commit()
+    return {"id": todo_id, "status": "deleted"}
+
+
 # ── Daily Log ─────────────────────────────────────────────
 
 
@@ -436,32 +454,25 @@ def add_log(entry: dict):
 @app.get("/api/logs")
 def list_logs(log_date: Optional[str] = None, category_id: Optional[int] = None):
     query = "SELECT * FROM daily_log WHERE 1=1"
-    params = []
-    if log_date:
-        query += " AND date = ?"
-        params.append(log_date)
-    if category_id:
-        query += " AND category_id = ?"
-        params.append(category_id)
+    params = [{"key": "log_date", "val": log_date}, {"key": "category_id", "val": category_id}]
+    params_clean = []
+    for p in params:
+        if p["val"]:
+            query += f' AND {p["key"]} = ?'
+            params_clean.append(p["val"])
     query += " ORDER BY category_id, id DESC"
     with get_db() as conn:
-        rows = conn.execute(query, params).fetchall()
-    logs = []
-    for row in rows:
-        logs.append({
-            "id": row["id"],
-            "date": row["date"],
-            "category_id": row["category_id"],
-            "category_name": CATEGORIES.get(row["category_id"], "?"),
-            "entry": row["entry"],
-            "sub_entry": row["sub_entry"],
-            "source": row["source"],
-            "todo_id": row["todo_id"],
-        })
-    return logs
+        rows = conn.execute(query, params_clean).fetchall()
+    return [
+        {"id": r["id"], "date": r["date"], "category_id": r["category_id"],
+         "category_name": CATEGORIES.get(r["category_id"], "?"),
+         "entry": r["entry"], "sub_entry": r["sub_entry"],
+         "source": r["source"], "todo_id": r["todo_id"]}
+        for r in rows
+    ]
 
 
-# ── Stats ────────────────────────────────────────────
+# ── Stats ──────────────────────────────────────────────
 
 
 @app.get("/api/stats")
@@ -470,56 +481,23 @@ def get_stats():
         total = conn.execute("SELECT COUNT(*) FROM todos").fetchone()[0]
         active = conn.execute("SELECT COUNT(*) FROM todos WHERE status != 'done'").fetchone()[0]
         finished = conn.execute("SELECT COUNT(*) FROM todos WHERE status = 'done'").fetchone()[0]
+        projects_active = conn.execute("SELECT COUNT(*) FROM todos WHERE status != 'done' AND item_type = 'project'").fetchone()[0]
+        tasks_active = conn.execute("SELECT COUNT(*) FROM todos WHERE status != 'done' AND item_type = 'task'").fetchone()[0]
         high = conn.execute("SELECT COUNT(*) FROM todos WHERE status != 'done' AND priority = 'high'").fetchone()[0]
         overdue = conn.execute(
             "SELECT COUNT(*) FROM todos WHERE status != 'done' AND parent_id IS NULL AND due_date < ?",
             (date.today().isoformat(),)
         ).fetchone()[0]
 
-        cat_rows = conn.execute("""
-            SELECT c.id, c.name,
-                   COUNT(t.id) as total,
-                   SUM(CASE WHEN t.status != 'done' THEN 1 ELSE 0 END) as active
-            FROM (
-                SELECT 1 as id, 'PR & Branding' as name UNION ALL
-                SELECT 2, 'Events' UNION ALL SELECT 3, 'Creative Production' UNION ALL
-                SELECT 4, 'Retail' UNION ALL SELECT 5, 'E-Commerce' UNION ALL
-                SELECT 6, 'B2B' UNION ALL SELECT 7, 'Brothers @ Home' UNION ALL
-                SELECT 8, 'Sales Expansion' UNION ALL SELECT 9, 'Framework' UNION ALL
-                SELECT 10, 'Collaboration' UNION ALL SELECT 11, 'Training' UNION ALL
-                SELECT 12, 'Budget' UNION ALL SELECT 13, 'IT' UNION ALL
-                SELECT 14, 'Future Planning'
-            ) c
-            LEFT JOIN todos t ON c.id = t.category_id
-            GROUP BY c.id, c.name
-            ORDER BY c.id
-        """).fetchall()
-
-    categories = [{"id": r["id"], "name": r["name"], "total": r["total"], "active": r["active"]} for r in cat_rows]
     return {
-        "total_todos": total,
-        "active_todos": active,
-        "completed_todos": finished,
+        "total": total,
+        "active": active,
+        "completed": finished,
+        "projects_active": projects_active,
+        "tasks_active": tasks_active,
         "high_priority": high,
         "overdue": overdue,
-        "categories": categories,
     }
-
-
-@app.post("/api/todos/{todo_id}/uncomplete")
-def uncomplete_todo(todo_id: int):
-    """Mark a todo as not done, resetting status and completed_at."""
-    with get_db() as conn:
-        row = conn.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
-        if not row:
-            raise HTTPException(404, f"Todo #{todo_id} not found")
-        # If it's a parent, also reset subtasks (don't delete them)
-        conn.execute(
-            "UPDATE todos SET status = 'todo', completed_at = NULL, updated_at = ? WHERE id = ?",
-            (datetime.now().isoformat(), todo_id)
-        )
-        conn.commit()
-    return {"id": todo_id, "title": row["title"], "status": "reset"}
 
 
 @app.get("/api/backup")
